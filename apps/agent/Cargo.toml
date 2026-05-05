@@ -1,0 +1,36 @@
+[package]
+name    = "contixis-agent"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "contixis-agent"
+path = "src/main.rs"
+
+[dependencies]
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio       = { workspace = true }
+clap        = { workspace = true }
+parking_lot = { workspace = true }
+uuid        = { workspace = true }
+dirs        = { workspace = true }
+serde_json  = { workspace = true }
+hostname    = { workspace = true }
+arboard     = { workspace = true }
+quinn       = { workspace = true }
+rustls      = { workspace = true }
+prost       = { workspace = true }
+rand        = { workspace = true }
+rcgen       = { workspace = true }
+contixis-proto  = { path = "../../crates/contixis-proto" }
+contixis-crypto = { path = "../../crates/contixis-crypto" }
+contixis-core   = { path = "../../crates/contixis-core" }
+contixis-net    = { path = "../../crates/contixis-net" }
+contixis-input  = { path = "../../crates/contixis-input" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11  = { version = "2", features = ["xlib", "xtest"] }
+libc = { workspace = true }

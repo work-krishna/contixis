@@ -1,0 +1,25 @@
+[package]
+name    = "contixis-crypto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow     = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+rand       = { workspace = true }
+hex        = { workspace = true }
+subtle     = { workspace = true }
+hmac       = { workspace = true }
+sha2       = { workspace = true }
+base32     = { workspace = true }
+uuid       = { workspace = true }
+dirs       = { workspace = true }
+rcgen      = { workspace = true }
+rustls     = { workspace = true }
+rustls-pemfile = { workspace = true }
+tokio      = { workspace = true }
+parking_lot = { workspace = true }
+chrono     = { workspace = true }

@@ -1,0 +1,150 @@
+syntax = "proto3";
+package contixis;
+
+// ─────────────────────────────────────────────────────────────────
+// Wire envelope — every reliable-stream message is framed as:
+//   [1 byte msg_type][3 bytes BE length][N bytes payload]
+// The msg_type matches MsgType below.
+// ─────────────────────────────────────────────────────────────────
+
+// ── Session ──────────────────────────────────────────────────────
+
+message Handshake {
+    string protocol_version = 1;
+    string device_id        = 2;
+    string device_name      = 3;
+    string os_type          = 4;
+    repeated ScreenInfo screens = 5;
+}
+
+message ScreenInfo {
+    string id          = 1;
+    uint32 width_px    = 2;
+    uint32 height_px   = 3;
+    float  dpi_scale   = 4;
+    bool   is_primary  = 5;
+    int32  offset_x    = 6;
+    int32  offset_y    = 7;
+}
+
+message PairingRequired { bytes nonce = 1; }
+
+message PairingRequest {
+    string device_name = 1;
+    bytes  csr         = 2;
+    bytes  pin_mac     = 3;
+}
+
+message PairingSuccess {
+    bytes agent_cert_der = 1;
+    bytes ca_cert_der    = 2;
+}
+
+message PairingFailed { string reason = 1; }
+
+message SessionReady {
+    string session_id  = 1;
+    bytes  ca_cert_der = 2;
+}
+
+message SessionTerminate { string reason = 1; }
+
+message Heartbeat    { uint64 timestamp_us = 1; uint32 seq = 2; }
+message HeartbeatAck { uint32 seq = 1; }
+
+// ── Grid ─────────────────────────────────────────────────────────
+
+message GridLayout {
+    uint32 cols           = 1;
+    uint32 rows           = 2;
+    repeated GridCell cells = 3;
+}
+
+message GridCell {
+    uint32 col       = 1;
+    uint32 row       = 2;
+    string device_id = 3;
+    string screen_id = 4;
+}
+
+message ScreenInfoUpdate {
+    repeated ScreenInfo added   = 1;
+    repeated string     removed = 2;
+}
+
+// ── Input ─────────────────────────────────────────────────────────
+
+message FocusTransfer {
+    string target_screen_id = 1;
+    float  entry_norm_x     = 2;
+    float  entry_norm_y     = 3;
+}
+
+message FocusDrop {}
+
+message MouseMove {
+    float  norm_x           = 1;
+    float  norm_y           = 2;
+    string target_screen_id = 3;
+}
+
+message MouseButton {
+    uint32 button       = 1;
+    bool   pressed      = 2;
+    uint64 timestamp_us = 3;
+}
+
+message MouseScroll {
+    float delta_x       = 1;
+    float delta_y       = 2;
+    uint64 timestamp_us = 3;
+}
+
+message KeyEvent {
+    uint32 hid_usage    = 1;
+    uint32 modifiers    = 2;
+    bool   pressed      = 3;
+    uint64 timestamp_us = 4;
+    optional uint32 character = 5;
+}
+
+// ── Clipboard ─────────────────────────────────────────────────────
+
+message ClipboardNotify {
+    string source_device_id = 1;
+    uint64 sequence         = 2;
+    string content_type     = 3;
+    bytes  content_hash     = 4;
+    uint64 size_bytes       = 5;
+}
+
+message ClipboardRequest { uint64 sequence = 1; }
+
+message ClipboardData {
+    string source_device_id = 1;
+    uint64 sequence         = 2;
+    string content_type     = 3;
+    bytes  data             = 4;
+}
+
+// ── Video ─────────────────────────────────────────────────────────
+
+// Sent as QUIC unreliable datagrams — compact binary format,
+// NOT protobuf (too much overhead per datagram).
+// See VideoPacket struct in contixis-codec.
+
+// ── Agent Status ──────────────────────────────────────────────────
+
+message AgentStatus {
+    bool screen_locked = 1;
+    bool privacy_mode  = 2;
+}
+
+// ── Time Sync ─────────────────────────────────────────────────────
+
+message TimeSyncPing { uint64 client_send_us = 1; }
+message TimeSyncPong {
+    uint64 client_send_us    = 1;
+    uint64 server_receive_us = 2;
+    uint64 server_send_us    = 3;
+}
