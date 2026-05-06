@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { SpatialScreen } from "../store";
 
 // ── Commands ────────────────────────────────────────────────────────────────
 
@@ -11,16 +12,32 @@ export function stopServer(): Promise<void> {
   return invoke("stop_server");
 }
 
-export interface HostCell { row: number; col: number; name: string; hostname: string; }
+export interface HostScreenInfo {
+  deviceId: string;
+  x: number;
+  y: number;
+  widthPx: number;
+  heightPx: number;
+  name: string;
+  hostname: string;
+}
 
-export function getHostInfo(): Promise<{ hostId: string; addr: string; hostCells: HostCell[] }> {
+export function getHostInfo(): Promise<{
+  hostId: string;
+  addr: string;
+  hostScreens: HostScreenInfo[];
+}> {
   return invoke("get_host_info");
 }
 
-export function updateGridLayout(
-  cells: Array<{ row: number; col: number; deviceId?: string; screenId?: string }>
+export function getSpatialLayout(): Promise<SpatialScreen[]> {
+  return invoke<SpatialScreen[]>("get_spatial_layout");
+}
+
+export function updateSpatialLayout(
+  screens: Array<{ deviceId: string; x: number; y: number }>
 ): Promise<void> {
-  return invoke("update_grid_layout", { cells });
+  return invoke("update_spatial_layout", { screens });
 }
 
 export function disconnectDevice(deviceId: string): Promise<void> {
@@ -29,14 +46,12 @@ export function disconnectDevice(deviceId: string): Promise<void> {
 
 // ── Events ───────────────────────────────────────────────────────────────────
 
-export interface GridCellUpdate { row: number; col: number; deviceId: string; screenId: string; }
-
 export type DeviceEvent =
-  | { type: "connected";    deviceId: string; displayName: string; osType: string }
-  | { type: "established";  deviceId: string }
-  | { type: "pairing";      deviceId: string; pin: string }
-  | { type: "disconnected"; deviceId: string }
-  | { type: "gridUpdate";   cells: GridCellUpdate[] };
+  | { type: "connected";     deviceId: string; displayName: string; osType: string }
+  | { type: "established";   deviceId: string }
+  | { type: "pairing";       deviceId: string; pin: string }
+  | { type: "disconnected";  deviceId: string }
+  | { type: "layoutUpdate";  screens: SpatialScreen[] };
 
 export function onDeviceEvent(cb: (e: DeviceEvent) => void) {
   return listen<DeviceEvent>("device-event", (event) => cb(event.payload));

@@ -1,6 +1,7 @@
 use crate::conn_registry::HostMsg;
-use crate::server::{self, broadcast_grid_layout};
+use crate::server::{self, broadcast_grid_layout, collect_layout_screens, emit_layout_update};
 use crate::state::HostState;
+use contixis_core::ScreenPlacement;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -14,20 +15,32 @@ pub struct GridCellPayload {
     pub screen_id: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenPositionPayload {
+    pub device_id: String,
+    pub x: i32,
+    pub y: i32,
+}
+
 #[derive(Serialize)]
-pub struct HostCellInfo {
-    pub row:      u32,
-    pub col:      u32,
-    pub name:     String,
-    pub hostname: String,
+#[serde(rename_all = "camelCase")]
+pub struct HostScreenInfo {
+    pub device_id: String,
+    pub x:         i32,
+    pub y:         i32,
+    pub width_px:  u32,
+    pub height_px: u32,
+    pub name:      String,
+    pub hostname:  String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostInfo {
-    pub host_id:    String,
-    pub addr:       String,
-    pub host_cells: Vec<HostCellInfo>,
+    pub host_id:      String,
+    pub addr:         String,
+    pub host_screens: Vec<HostScreenInfo>,
 }
 
 #[tauri::command]
@@ -68,20 +81,23 @@ pub async fn get_host_info(state: State<'_, Arc<HostState>>) -> Result<HostInfo,
         .trim()
         .to_string();
 
-    let host_cells = state.host_monitors.read()
+    let host_screens = state.host_monitors.read()
         .iter()
-        .map(|m| HostCellInfo {
-            row:      m.grid_pos.row as u32,
-            col:      m.grid_pos.col as u32,
-            name:     m.name.clone(),
-            hostname: hostname.clone(),
+        .map(|m| HostScreenInfo {
+            device_id: m.device_id.clone(),
+            x:         m.x,
+            y:         m.y,
+            width_px:  m.width  as u32,
+            height_px: m.height as u32,
+            name:      m.name.clone(),
+            hostname:  hostname.clone(),
         })
         .collect();
 
     Ok(HostInfo {
-        host_id: hex::encode(&state.ca.cert_der()[..8]),
-        addr: state.config.listen_addr.to_string(),
-        host_cells,
+        host_id:      hex::encode(&state.ca.cert_der()[..8]),
+        addr:         state.config.listen_addr.to_string(),
+        host_screens,
     })
 }
 
@@ -131,5 +147,36 @@ pub async fn disconnect_device(
         }
     }
     tracing::info!(%device_id, "device disconnected by user");
+    Ok(())
+}
+
+/// Return all screens currently in the spatial layout (host + agents).
+/// Used on frontend mount to populate the canvas with any already-connected agents.
+#[tauri::command]
+pub async fn get_spatial_layout(
+    state: State<'_, Arc<HostState>>,
+) -> Result<Vec<server::ScreenUiPayload>, String> {
+    Ok(collect_layout_screens(&state))
+}
+
+/// Update the pixel positions of agent screens in the spatial layout (from UI drag).
+/// Only positions are updated; screen dimensions come from the agent's reported resolution.
+#[tauri::command]
+pub async fn update_spatial_layout(
+    screens: Vec<ScreenPositionPayload>,
+    app: AppHandle,
+    state: State<'_, Arc<HostState>>,
+) -> Result<(), String> {
+    {
+        let mut layout = state.layout.write();
+        for sp in &screens {
+            if let Some(existing) = layout.find_mut(&sp.device_id) {
+                existing.x = sp.x;
+                existing.y = sp.y;
+            }
+        }
+    }
+    emit_layout_update(&app, &state);
+    broadcast_grid_layout(&state);
     Ok(())
 }

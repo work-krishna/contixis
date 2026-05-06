@@ -82,6 +82,12 @@ message FocusTransfer {
 
 message FocusDrop {}
 
+/// Sent agent → host when the cursor exits the agent screen toward the host.
+message FocusRelease {
+    float exit_norm_x = 1;
+    float exit_norm_y = 2;
+}
+
 message MouseMove {
     float  norm_x           = 1;
     float  norm_y           = 2;

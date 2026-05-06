@@ -93,20 +93,20 @@ fn linux_watch(state: Arc<HostState>) {
                     };
 
                     if let Some((enx, eny)) = edge {
-                        let host_pos = mon.grid_pos;
+                        let mon_device_id = mon.device_id.clone();
                         let warp_x = mon.x + mon.width  / 2;
                         let warp_y = mon.y + mon.height / 2;
                         let mon_w  = mon.width;
                         let mon_h  = mon.height;
                         drop(monitors);
 
-                        let grid = state.grid.read();
-                        if let Some((screen, _new_pos, ex, ey)) =
-                            grid.edge_transition(host_pos, enx, eny)
+                        let layout = state.layout.read();
+                        if let Some((screen, ex, ey)) =
+                            layout.edge_transition(&mon_device_id, enx, eny)
                         {
                             let target_id = screen.device_id.clone();
                             let screen_id = target_id.clone();
-                            drop(grid);
+                            drop(layout);
 
                             // Only transition to actual agent connections, not other host cells.
                             if state.connections.is_connected(&target_id) {

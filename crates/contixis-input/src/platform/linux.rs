@@ -37,6 +37,18 @@ pub fn uninstall_hook() {
 
 fn hook_thread() {
     set_realtime_priority();
+    // Open X11 display for keysym lookup (layout-aware, like Barrier).
+    unsafe {
+        if std::env::var("DISPLAY").is_err() {
+            std::env::set_var("DISPLAY", ":0");
+        }
+        let dpy = x11::xlib::XOpenDisplay(std::ptr::null());
+        if !dpy.is_null() {
+            KEYSYM_DPY.get_or_init(|| XDpy(dpy));
+        } else {
+            tracing::warn!("hook: XOpenDisplay failed — keysym lookup unavailable");
+        }
+    }
     let kbd_paths   = find_keyboards();
     let mouse_paths = find_mice();
     if kbd_paths.is_empty() || mouse_paths.is_empty() {
@@ -249,10 +261,18 @@ fn dispatch(ev: InputEvent, is_kbd: bool, modifiers: &mut u32) {
             let pressed = ev.value == 1;
             if is_kbd {
                 update_mods(ev.code, pressed, modifiers);
-                let hid = linux_key_to_hid(ev.code as u32);
-                if hid != 0 {
+                // Barrier approach: translate via X11 keysym so it's layout-aware.
+                // evdev code + 8 = X11 keycode.
+                let keysym = if let Some(XDpy(dpy)) = KEYSYM_DPY.get() {
+                    let x11_code = (ev.code + 8) as u8;
+                    unsafe { x11::xlib::XKeycodeToKeysym(*dpy, x11_code, 0) as u32 }
+                } else {
+                    0
+                };
+                // 0 = no keysym, 0xFFFFFF = XK_VoidSymbol (also invalid)
+                if keysym != 0 && keysym != 0xFFFFFF {
                     let _ = tx.send(HookEvent::KeyEvent {
-                        hid_usage: hid,
+                        keysym,
                         pressed,
                         modifiers: *modifiers,
                     });
@@ -298,8 +318,11 @@ struct XDpy(*mut x11::xlib::Display);
 unsafe impl Send for XDpy {}
 unsafe impl Sync for XDpy {}
 
-static INJ_DPY:   OnceLock<XDpy>       = OnceLock::new();
-static UINPUT_FD: OnceLock<Option<i32>> = OnceLock::new();
+// Host-side display for XKeycodeToKeysym (capture path).
+static KEYSYM_DPY: OnceLock<XDpy>       = OnceLock::new();
+// Agent-side display for XKeysymToKeycode + XTest (injection path).
+static INJ_DPY:    OnceLock<XDpy>       = OnceLock::new();
+static UINPUT_FD:  OnceLock<Option<i32>> = OnceLock::new();
 
 const EV_SYN:    u16 = 0;
 const SYN_REPORT: u16 = 0;
@@ -512,89 +535,31 @@ pub fn inject_mouse_scroll(dx: i32, dy: i32) -> Result<()> {
     Ok(())
 }
 
-pub fn inject_key_event(hid_usage: u32, pressed: bool, _modifiers: u32) -> Result<()> {
-    let linux_key = hid_to_linux_key(hid_usage);
-    if linux_key == 0 { return Ok(()); }
-    if let Some(fd) = uinput_fd() {
-        uinput_write(fd, EV_KEY, linux_key as u16, pressed as i32);
-        uinput_write(fd, EV_SYN, SYN_REPORT, 0);
-        return Ok(());
-    }
+pub fn inject_key_event(keysym: u32, pressed: bool, _modifiers: u32) -> Result<()> {
     let Some(XDpy(dpy)) = INJ_DPY.get() else { return Ok(()); };
-    let x11_code = (linux_key + 8) as u32;
+    // Resolve keysym → X11 keycode on the agent's display (layout-aware).
+    let x11_code = unsafe {
+        x11::xlib::XKeysymToKeycode(*dpy, keysym as x11::xlib::KeySym)
+    };
+    if x11_code == 0 { return Ok(()); }
+
+    if let Some(fd) = uinput_fd() {
+        // uinput uses evdev keycodes = X11 keycode − 8
+        let evdev = (x11_code as u32).saturating_sub(8);
+        if evdev > 0 {
+            uinput_write(fd, EV_KEY, evdev as u16, pressed as i32);
+            uinput_write(fd, EV_SYN, SYN_REPORT, 0);
+            return Ok(());
+        }
+    }
+    // XTest fallback: use X11 keycode directly
     unsafe {
-        x11::xtest::XTestFakeKeyEvent(*dpy, x11_code, pressed as i32, x11::xlib::CurrentTime);
+        x11::xtest::XTestFakeKeyEvent(*dpy, x11_code as u32, pressed as i32, x11::xlib::CurrentTime);
         x11::xlib::XFlush(*dpy);
     }
     Ok(())
 }
 
-// ── Key-code tables ──────────────────────────────────────────────────────────
-// Linux keycodes follow QWERTY physical positions; HID Usage IDs are alphabetical.
-// These tables must be explicit — there is no arithmetic shortcut.
-
-fn linux_key_to_hid(linux: u32) -> u32 {
-    match linux {
-        // Digits
-        2  => 0x1E, 3  => 0x1F, 4  => 0x20, 5  => 0x21, 6  => 0x22,
-        7  => 0x23, 8  => 0x24, 9  => 0x25, 10 => 0x26, 11 => 0x27,
-        // Top letter row (Q–P)
-        16 => 0x14, 17 => 0x1A, 18 => 0x08, 19 => 0x15, 20 => 0x17,
-        21 => 0x1C, 22 => 0x18, 23 => 0x0C, 24 => 0x12, 25 => 0x13,
-        // Home row (A–L)
-        30 => 0x04, 31 => 0x16, 32 => 0x07, 33 => 0x09, 34 => 0x0A,
-        35 => 0x0B, 36 => 0x0D, 37 => 0x0E, 38 => 0x0F,
-        // Bottom row (Z–M)
-        44 => 0x1D, 45 => 0x1B, 46 => 0x06, 47 => 0x19,
-        48 => 0x05, 49 => 0x11, 50 => 0x10,
-        // Punctuation / symbols
-        12 => 0x2D, 13 => 0x2E, 26 => 0x2F, 27 => 0x30,
-        39 => 0x33, 40 => 0x34, 41 => 0x35,
-        43 => 0x31, 51 => 0x36, 52 => 0x37, 53 => 0x38,
-        // Control keys
-        1  => 0x29, 14 => 0x2A, 15 => 0x2B, 28 => 0x28, 57 => 0x2C, 58 => 0x39,
-        // Modifiers
-        29 => 0xE0, 42 => 0xE1, 56 => 0xE2, 125 => 0xE3,
-        97 => 0xE4, 54 => 0xE5, 100 => 0xE6, 126 => 0xE7,
-        // F1–F10 (59–68), F11=87, F12=88
-        59 => 0x3A, 60 => 0x3B, 61 => 0x3C, 62 => 0x3D, 63 => 0x3E,
-        64 => 0x3F, 65 => 0x40, 66 => 0x41, 67 => 0x42, 68 => 0x43,
-        87 => 0x44, 88 => 0x45,
-        // Navigation
-        102 => 0x4A, 103 => 0x52, 104 => 0x4B, 105 => 0x50,
-        106 => 0x4F, 107 => 0x4D, 108 => 0x51, 109 => 0x4E,
-        110 => 0x49, 111 => 0x4C,
-        _ => 0,
-    }
-}
-
-pub fn hid_to_linux_key(hid: u32) -> u32 {
-    match hid {
-        // Letters (HID alphabetical → Linux QWERTY positions)
-        0x04 => 30, 0x05 => 48, 0x06 => 46, 0x07 => 32, 0x08 => 18,
-        0x09 => 33, 0x0A => 34, 0x0B => 35, 0x0C => 23, 0x0D => 36,
-        0x0E => 37, 0x0F => 38, 0x10 => 50, 0x11 => 49, 0x12 => 24,
-        0x13 => 25, 0x14 => 16, 0x15 => 19, 0x16 => 31, 0x17 => 20,
-        0x18 => 22, 0x19 => 47, 0x1A => 17, 0x1B => 45, 0x1C => 21, 0x1D => 44,
-        // Digits
-        0x1E => 2, 0x1F => 3, 0x20 => 4, 0x21 => 5, 0x22 => 6,
-        0x23 => 7, 0x24 => 8, 0x25 => 9, 0x26 => 10, 0x27 => 11,
-        // Control
-        0x28 => 28, 0x29 => 1, 0x2A => 14, 0x2B => 15, 0x2C => 57,
-        0x2D => 12, 0x2E => 13, 0x2F => 26, 0x30 => 27, 0x31 => 43,
-        0x33 => 39, 0x34 => 40, 0x35 => 41, 0x36 => 51, 0x37 => 52, 0x38 => 53,
-        0x39 => 58,
-        // F1–F10 linear, F11=87, F12=88
-        0x3A => 59, 0x3B => 60, 0x3C => 61, 0x3D => 62, 0x3E => 63,
-        0x3F => 64, 0x40 => 65, 0x41 => 66, 0x42 => 67, 0x43 => 68,
-        0x44 => 87, 0x45 => 88,
-        0x49 => 110, 0x4A => 102, 0x4B => 104, 0x4C => 111, 0x4D => 107,
-        0x4E => 109, 0x4F => 106, 0x50 => 105, 0x51 => 108, 0x52 => 103,
-        0xE0 => 29, 0xE1 => 42, 0xE2 => 56, 0xE3 => 125,
-        0xE4 => 97, 0xE5 => 54, 0xE6 => 100, 0xE7 => 126,
-        _ => 0,
-    }
-}
 
 fn set_realtime_priority() {
     unsafe {

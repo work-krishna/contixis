@@ -14,16 +14,17 @@ export interface Device {
   osType: string;
   status: "connected" | "established" | "pairing" | "disconnected";
   screens: ScreenInfo[];
-  gridRow?: number;
-  gridCol?: number;
   lastSeen: number;
 }
 
-export interface GridCell {
-  row: number;
-  col: number;
-  deviceId?: string;
-  screenId?: string;
+export interface SpatialScreen {
+  deviceId: string;
+  x: number;
+  y: number;
+  widthPx: number;
+  heightPx: number;
+  isHost: boolean;
+  displayName: string;
 }
 
 export interface AppState {
@@ -33,12 +34,10 @@ export interface AppState {
   removeDevice: (id: string) => void;
   setDeviceStatus: (id: string, status: Device["status"]) => void;
 
-  // Grid layout (3×3)
-  gridRows: number;
-  gridCols: number;
-  grid: GridCell[];
-  placeDevice: (deviceId: string, row: number, col: number, screenId?: string) => void;
-  removeFromGrid: (deviceId: string) => void;
+  // Spatial layout
+  spatialScreens: SpatialScreen[];
+  setSpatialScreens: (screens: SpatialScreen[]) => void;
+  updateScreenPosition: (deviceId: string, x: number, y: number) => void;
 
   // Pairing
   pairingPin: string | null;
@@ -52,18 +51,6 @@ export interface AppState {
   // Host info
   hostId: string;
   listenAddr: string;
-  hostCells: Array<{ row: number; col: number; name: string; hostname: string }>;
-  setHostCells: (cells: Array<{ row: number; col: number; name: string; hostname: string }>) => void;
-}
-
-function buildInitialGrid(rows: number, cols: number): GridCell[] {
-  const cells: GridCell[] = [];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      cells.push({ row: r, col: c });
-    }
-  }
-  return cells;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -82,25 +69,12 @@ export const useStore = create<AppState>((set) => ({
         : s.devices,
     })),
 
-  gridRows: 3,
-  gridCols: 3,
-  grid: buildInitialGrid(3, 3),
-  placeDevice: (deviceId, row, col, screenId) =>
+  spatialScreens: [],
+  setSpatialScreens: (screens) => set({ spatialScreens: screens }),
+  updateScreenPosition: (deviceId, x, y) =>
     set((s) => ({
-      grid: s.grid.map((cell) =>
-        cell.row === row && cell.col === col
-          ? { ...cell, deviceId, screenId }
-          : cell.deviceId === deviceId
-          ? { ...cell, deviceId: undefined, screenId: undefined }
-          : cell
-      ),
-    })),
-  removeFromGrid: (deviceId) =>
-    set((s) => ({
-      grid: s.grid.map((cell) =>
-        cell.deviceId === deviceId
-          ? { ...cell, deviceId: undefined, screenId: undefined }
-          : cell
+      spatialScreens: s.spatialScreens.map((sc) =>
+        sc.deviceId === deviceId ? { ...sc, x, y } : sc
       ),
     })),
 
@@ -113,6 +87,4 @@ export const useStore = create<AppState>((set) => ({
 
   hostId: "local",
   listenAddr: "0.0.0.0:7443",
-  hostCells: [{ row: 1, col: 1, name: "Display", hostname: "host" }],
-  setHostCells: (cells) => set({ hostCells: cells }),
 }));

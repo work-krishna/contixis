@@ -70,10 +70,10 @@ pub fn run() {
                                         delta_x: dx as f32, delta_y: dy as f32, timestamp_us: now_us(),
                                     });
                                 }
-                                HookEvent::KeyEvent { hid_usage, pressed, modifiers } => {
-                                    tracing::info!(hid = %format!("0x{:02X}", hid_usage), pressed, device = %did, "hook key");
-                                    // Escape → return focus to host.
-                                    if hid_usage == contixis_proto::hid::ESCAPE && pressed {
+                                HookEvent::KeyEvent { keysym, pressed, modifiers } => {
+                                    tracing::info!(ks = %format!("0x{:04X}", keysym), pressed, device = %did, "hook key");
+                                    // XK_Escape = 0xFF1B → return focus to host.
+                                    if keysym == 0xFF1B && pressed {
                                         tracing::info!(device = %did, "ESC → releasing focus");
                                         contixis_input::platform::set_focus_active(false);
                                         conns.send_sync(&did, HostMsg::FocusDrop);
@@ -81,7 +81,7 @@ pub fn run() {
                                         continue;
                                     }
                                     conns.send_sync(&did, HostMsg::KeyEvent {
-                                        hid_usage, modifiers, pressed, timestamp_us: now_us(),
+                                        hid_usage: keysym, modifiers, pressed, timestamp_us: now_us(),
                                     });
                                 }
                             }
@@ -93,11 +93,22 @@ pub fn run() {
                 }
             }
 
-            // ── Detect host monitors and place them in the grid ──────────────
+            // ── Detect host monitors and place them in the grid + spatial layout ──
             {
+                use contixis_core::ScreenPlacement;
                 let mut grid = host_state.grid.write();
                 let mons = monitors::detect_and_place(&mut grid);
                 tracing::info!(count = mons.len(), "host monitors detected");
+                let mut layout = host_state.layout.write();
+                for m in &mons {
+                    layout.place(ScreenPlacement {
+                        device_id: m.device_id.clone(),
+                        x: m.x,
+                        y: m.y,
+                        width:  m.width  as u32,
+                        height: m.height as u32,
+                    });
+                }
                 *host_state.host_monitors.write() = mons;
             }
 
@@ -143,7 +154,9 @@ pub fn run() {
             commands::start_server,
             commands::stop_server,
             commands::get_host_info,
+            commands::get_spatial_layout,
             commands::update_grid_layout,
+            commands::update_spatial_layout,
             commands::disconnect_device,
         ])
         .run(tauri::generate_context!())

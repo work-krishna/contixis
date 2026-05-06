@@ -29,7 +29,12 @@ pub fn detect_and_place(grid: &mut RwLockWriteGuard<VirtualGrid>) -> Vec<HostMon
                 placed = placed,
                 "host monitor"
             );
-            HostMonitor { x: *x, y: *y, width: *w, height: *h, grid_pos: pos, name: name.clone() }
+            HostMonitor {
+                x: *x, y: *y, width: *w, height: *h,
+                grid_pos: pos,
+                name: name.clone(),
+                device_id: format!("__host__{}", i),
+            }
         })
         .collect()
 }

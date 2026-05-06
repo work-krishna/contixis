@@ -134,12 +134,13 @@ mod daemon {
     use contixis_net::{
         make_agent_tls_config_insecure, make_agent_transport, AgentSession, FrameReader, FrameWriter, MdnsDiscovery,
     };
-    use contixis_proto::{ClipboardData as ProtoCbData, MsgType};
+    use contixis_proto::{ClipboardData as ProtoCbData, FocusRelease as ProtoFocusRelease, MsgType};
     use parking_lot::Mutex;
     use prost::Message as ProstMessage;
     use quinn::Endpoint;
     use std::net::SocketAddr;
     use std::sync::Arc;
+    use tokio::sync::mpsc;
 
     pub async fn run(identity: DeviceIdentity, data_dir: PathBuf, direct_host: Option<String>, static_pin: Option<String>) -> Result<()> {
         tracing::info!(device_id = %identity.device_id, "Contixis agent starting");
@@ -270,13 +271,17 @@ mod daemon {
         let injector = InputInjector::new()?;
         let (sw, sh) = screen_dimensions();
 
-        // Open agent→host uni stream for clipboard updates.
+        // Channel used by event_loop and clipboard_poller to write to host.
+        let (to_host_tx, to_host_rx) = mpsc::unbounded_channel::<AgentMsg>();
+
+        // Open agent→host uni stream; a single writer task owns it.
         let send = conn.open_uni().await?;
-        tokio::spawn(clipboard_sender(FrameWriter::new(send)));
+        tokio::spawn(host_writer(FrameWriter::new(send), to_host_rx));
+        tokio::spawn(clipboard_poller(to_host_tx.clone()));
 
         // Accept host→agent uni stream for input/focus/clipboard events.
         let recv = conn.accept_uni().await?;
-        event_loop(FrameReader::new(recv), injector, sw, sh).await;
+        event_loop(FrameReader::new(recv), injector, sw, sh, to_host_tx).await;
 
         Ok(())
     }
@@ -326,8 +331,16 @@ mod daemon {
         injector: InputInjector,
         screen_w: i32,
         screen_h: i32,
+        to_host: mpsc::UnboundedSender<AgentMsg>,
     ) {
         let mut focused = false;
+        // Pixel cursor position on the agent screen, updated on every mouse delta.
+        let mut cursor_x: i32 = screen_w / 2;
+        let mut cursor_y: i32 = screen_h / 2;
+        // True after we sent a FocusRelease for the current edge crossing.
+        // Reset when cursor returns inside bounds or focus is re-transferred.
+        // Prevents spamming the host while cursor is held at the edge.
+        let mut pending_release = false;
 
         loop {
             let frame = match reader.read_frame().await {
@@ -344,14 +357,16 @@ mod daemon {
                         contixis_proto::FocusTransfer::decode(frame.payload.as_slice())
                     {
                         focused = true;
-                        let x = (ft.entry_norm_x * screen_w as f32) as i32;
-                        let y = (ft.entry_norm_y * screen_h as f32) as i32;
-                        let _ = injector.mouse_move_abs(x, y);
-                        tracing::info!(entry_x = x, entry_y = y, "focus received");
+                        pending_release = false;
+                        cursor_x = (ft.entry_norm_x * screen_w as f32) as i32;
+                        cursor_y = (ft.entry_norm_y * screen_h as f32) as i32;
+                        let _ = injector.mouse_move_abs(cursor_x, cursor_y);
+                        tracing::info!(entry_x = cursor_x, entry_y = cursor_y, "focus received");
                     }
                 }
                 MsgType::FocusDrop => {
                     focused = false;
+                    pending_release = false;
                     tracing::info!("focus dropped");
                 }
                 MsgType::MouseMove => {
@@ -359,9 +374,48 @@ mod daemon {
                         if let Ok(mm) =
                             contixis_proto::MouseMove::decode(frame.payload.as_slice())
                         {
-                            // norm_x/norm_y carry raw hardware deltas (not normalised).
-                            tracing::trace!(dx = mm.norm_x, dy = mm.norm_y, "inject mouse_move_rel");
-                            let _ = injector.mouse_move_rel(mm.norm_x as i32, mm.norm_y as i32);
+                            let dx = mm.norm_x as i32;
+                            let dy = mm.norm_y as i32;
+                            let prev_x = cursor_x;
+                            let prev_y = cursor_y;
+                            cursor_x += dx;
+                            cursor_y += dy;
+
+                            let oob = cursor_x < 0 || cursor_x >= screen_w
+                                   || cursor_y < 0 || cursor_y >= screen_h;
+
+                            if oob {
+                                if !pending_release {
+                                    pending_release = true;
+                                    // Inject only the partial movement that brings the
+                                    // physical cursor exactly to the edge, so virtual and
+                                    // physical cursors stay in sync for the return journey.
+                                    let edge_x = cursor_x.clamp(0, screen_w - 1);
+                                    let edge_y = cursor_y.clamp(0, screen_h - 1);
+                                    let pdx = edge_x - prev_x;
+                                    let pdy = edge_y - prev_y;
+                                    if pdx != 0 || pdy != 0 {
+                                        let _ = injector.mouse_move_rel(pdx, pdy);
+                                    }
+                                    let exit_norm_x = cursor_x as f32 / screen_w as f32;
+                                    let exit_norm_y = cursor_y as f32 / screen_h as f32;
+                                    tracing::info!(
+                                        exit_norm_x, exit_norm_y,
+                                        "cursor left screen — requesting focus release"
+                                    );
+                                    let _ = to_host.send(AgentMsg::FocusRelease {
+                                        exit_norm_x, exit_norm_y,
+                                    });
+                                }
+                                // Keep virtual cursor pinned to edge while waiting for host.
+                                cursor_x = cursor_x.clamp(0, screen_w - 1);
+                                cursor_y = cursor_y.clamp(0, screen_h - 1);
+                            } else {
+                                // Cursor back inside — ready for the next edge attempt.
+                                pending_release = false;
+                                tracing::trace!(dx, dy, "inject mouse_move_rel");
+                                let _ = injector.mouse_move_rel(dx, dy);
+                            }
                         }
                     }
                 }
@@ -411,7 +465,39 @@ mod daemon {
         }
     }
 
-    async fn clipboard_sender(mut writer: FrameWriter) {
+    enum AgentMsg {
+        FocusRelease { exit_norm_x: f32, exit_norm_y: f32 },
+        Clipboard    { seq: u64, data: Vec<u8> },
+    }
+
+    /// Owns the agent→host FrameWriter; drains AgentMsg from the channel.
+    async fn host_writer(
+        mut writer: FrameWriter,
+        mut rx: mpsc::UnboundedReceiver<AgentMsg>,
+    ) {
+        while let Some(msg) = rx.recv().await {
+            let r = match msg {
+                AgentMsg::FocusRelease { exit_norm_x, exit_norm_y } =>
+                    writer.write_proto(MsgType::FocusRelease, &ProtoFocusRelease {
+                        exit_norm_x, exit_norm_y,
+                    }).await,
+                AgentMsg::Clipboard { seq, data } =>
+                    writer.write_proto(MsgType::ClipboardData, &ProtoCbData {
+                        source_device_id: "agent".into(),
+                        sequence: seq,
+                        content_type: "text/plain".into(),
+                        data,
+                    }).await,
+            };
+            if let Err(e) = r {
+                tracing::warn!(error = %e, "host writer error");
+                break;
+            }
+        }
+    }
+
+    /// Polls the local clipboard every 500 ms and queues changed text to host_writer.
+    async fn clipboard_poller(to_host: mpsc::UnboundedSender<AgentMsg>) {
         let mut last = String::new();
         let mut seq: u64 = 0;
         loop {
@@ -425,22 +511,11 @@ mod daemon {
             .flatten();
 
             let Some(text) = text else { continue };
-            if text == last || text.is_empty() {
-                continue;
-            }
+            if text == last || text.is_empty() { continue; }
 
             last = text.clone();
             seq += 1;
-            let msg = ProtoCbData {
-                source_device_id: "agent".into(),
-                sequence: seq,
-                content_type: "text/plain".into(),
-                data: text.into_bytes(),
-            };
-            if let Err(e) = writer.write_proto(MsgType::ClipboardData, &msg).await {
-                tracing::warn!(error = %e, "clipboard send error");
-                break;
-            }
+            let _ = to_host.send(AgentMsg::Clipboard { seq, data: text.into_bytes() });
         }
     }
 

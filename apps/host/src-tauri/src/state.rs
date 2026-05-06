@@ -1,6 +1,6 @@
 use crate::conn_registry::ConnRegistry;
 use contixis_core::grid::GridPosition;
-use contixis_core::{AppConfig, ClipboardManager, DeviceRegistry, VirtualGrid};
+use contixis_core::{AppConfig, ClipboardManager, DeviceRegistry, SpatialLayout, VirtualGrid};
 use contixis_crypto::{CertificateAuthority, HostStore, PairingManager};
 use contixis_input::InputHook;
 use parking_lot::Mutex;
@@ -20,6 +20,8 @@ pub struct HostMonitor {
     pub grid_pos: GridPosition,
     /// XRandR output name (e.g. "DP-1", "HDMI-1", "eDP-1").
     pub name: String,
+    /// Stable device_id used in SpatialLayout (e.g. "__host__0").
+    pub device_id: String,
 }
 
 pub struct HostState {
@@ -40,6 +42,8 @@ pub struct HostState {
     pub screen_dims:    Arc<Mutex<(i32, i32)>>,
     /// Individual host monitors with their grid positions.
     pub host_monitors:  Arc<parking_lot::RwLock<Vec<HostMonitor>>>,
+    /// Spatial layout: pixel-coordinate positions for all screens (host + agents).
+    pub layout:         Arc<parking_lot::RwLock<SpatialLayout>>,
     /// Monotonic clipboard sequence counter.
     pub clipboard_seq:  Arc<AtomicU64>,
     /// Keeps the input hook alive for the app's lifetime.
@@ -78,6 +82,7 @@ impl HostState {
             screen_dims: Arc::new(Mutex::new((1920, 1080))),
             host_monitors: Arc::new(parking_lot::RwLock::new(Vec::new())),
             clipboard_seq: Arc::new(AtomicU64::new(1)),
+            layout: Arc::new(parking_lot::RwLock::new(SpatialLayout::new())),
             _hook: None,
         }
     }
