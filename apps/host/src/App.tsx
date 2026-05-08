@@ -17,8 +17,21 @@ export default function App() {
     startServer(listenAddr).catch(console.error);
 
     // Load all current screens (host + any already-connected agents).
+    // Also synthesise Device entries for agents so Titlebar/DeviceList aren't empty
+    // after a WebView reload (Rust process keeps running, no events re-fire).
     getSpatialLayout()
-      .then((screens) => { if (!cancelled) setSpatialScreens(screens); })
+      .then((screens) => {
+        if (cancelled) return;
+        setSpatialScreens(screens);
+        screens.filter(s => !s.isHost).forEach(s => setDevice({
+          deviceId:    s.deviceId,
+          displayName: s.displayName,
+          osType:      "",
+          status:      "established",
+          screens:     [],
+          lastSeen:    Date.now(),
+        }));
+      })
       .catch(console.error);
 
     const unsubPromise = onDeviceEvent((event) => {

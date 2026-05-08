@@ -6,6 +6,41 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 static HOOK_TX: OnceLock<mpsc::UnboundedSender<HookEvent>> = OnceLock::new();
 static HOOK_RUNNING: AtomicBool = AtomicBool::new(false);
+
+// Cached natural-scroll detection for this machine (host or agent).
+static NATURAL_SCROLL: OnceLock<bool> = OnceLock::new();
+
+/// Returns true if the OS scroll direction is "Natural" (content follows finger).
+/// Checked once per process via gsettings (GNOME) and falls back to xinput
+/// property scanning so it works across common desktop environments.
+fn is_natural_scroll() -> bool {
+    *NATURAL_SCROLL.get_or_init(|| {
+        // GNOME / Mutter
+        if let Ok(o) = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.peripherals.mouse", "natural-scroll"])
+            .output()
+        {
+            if let Ok(s) = String::from_utf8(o.stdout) {
+                if s.trim() == "true"  { return true;  }
+                if s.trim() == "false" { return false; }
+            }
+        }
+        // Generic libinput / xinput (KDE, etc.)
+        if let Ok(o) = std::process::Command::new("sh")
+            .args(["-c", "xinput list --id-only 2>/dev/null | \
+                xargs -I{} xinput list-props {} 2>/dev/null | \
+                grep -cE 'Natural Scrolling Enabled.*:\\s*1$'"])
+            .output()
+        {
+            if let Ok(s) = String::from_utf8(o.stdout) {
+                if s.trim().parse::<u32>().unwrap_or(0) > 0 {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+}
 // Set true while an agent holds focus; the evdev loop uses this to EVIOCGRAB/ungrab.
 static AGENT_FOCUSED: AtomicBool = AtomicBool::new(false);
 
@@ -290,8 +325,16 @@ fn dispatch(ev: InputEvent, is_kbd: bool, modifiers: &mut u32) {
         EV_REL if !is_kbd => match ev.code {
             REL_X      => { let _ = tx.send(HookEvent::MouseMove { dx: ev.value, dy: 0 }); }
             REL_Y      => { let _ = tx.send(HookEvent::MouseMove { dx: 0, dy: ev.value }); }
-            REL_WHEEL  => { let _ = tx.send(HookEvent::MouseScroll { dx: 0, dy: ev.value }); }
-            REL_HWHEEL => { let _ = tx.send(HookEvent::MouseScroll { dx: ev.value, dy: 0 }); }
+            REL_WHEEL  => {
+                // Normalise to traditional direction on the wire (+1 = up).
+                // The host evdev event is raw (before libinput natural-scroll).
+                let dy = if is_natural_scroll() { -ev.value } else { ev.value };
+                let _ = tx.send(HookEvent::MouseScroll { dx: 0, dy });
+            }
+            REL_HWHEEL => {
+                let dx = if is_natural_scroll() { -ev.value } else { ev.value };
+                let _ = tx.send(HookEvent::MouseScroll { dx, dy: 0 });
+            }
             _ => {}
         },
         _ => {}
@@ -516,6 +559,11 @@ pub fn inject_mouse_button(button: u8, pressed: bool) -> Result<()> {
 }
 
 pub fn inject_mouse_scroll(dx: i32, dy: i32) -> Result<()> {
+    // Wire carries traditional direction. Flip here if this machine uses Natural scroll,
+    // because uinput virtual devices are never covered by libinput's own inversion.
+    let flip = is_natural_scroll();
+    let dy = if flip { -dy } else { dy };
+    let dx = if flip { -dx } else { dx };
     if let Some(fd) = uinput_fd() {
         if dy != 0 { uinput_write(fd, EV_REL, REL_WHEEL,  dy); }
         if dx != 0 { uinput_write(fd, EV_REL, REL_HWHEEL, dx); }

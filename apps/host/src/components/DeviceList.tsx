@@ -100,6 +100,9 @@ function DeviceRow({
   onDisconnect: () => void;
 }) {
   const [hover, setHover] = React.useState(false);
+  const screenCount = useStore(
+    (s) => s.spatialScreens.filter((sc) => sc.deviceId === device.deviceId).length
+  );
 
   return (
     <div
@@ -138,8 +141,8 @@ function DeviceRow({
         </span>
       </div>
       <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2 }}>
-        {device.osType} · {device.screens.length} screen
-        {device.screens.length !== 1 ? "s" : ""}
+        {device.osType} · {screenCount} screen
+        {screenCount !== 1 ? "s" : ""}
       </div>
       {hover && (
         <button

@@ -137,6 +137,7 @@ interface DragState {
   origX: number;
   origY: number;
   screen: SpatialScreen;
+  startScale: number;
 }
 
 export function SpatialCanvas() {
@@ -162,12 +163,9 @@ export function SpatialCanvas() {
     return () => ro.disconnect();
   }, []);
 
-  // Viewport includes dragged screen at its current raw position for stable zoom.
-  const screensForViewport: SpatialScreen[] = drag && dragPos
-    ? [...spatialScreens, { ...drag.screen, x: dragPos.x, y: dragPos.y }]
-    : spatialScreens;
-
-  const vp = computeViewport(screensForViewport, canvasSize.w, canvasSize.h);
+  // Viewport is computed from settled screens only (never from the floating dragged screen).
+  // This prevents the zoom-feedback loop: drag right → scale drops → delta grows → jumps further.
+  const vp = computeViewport(spatialScreens, canvasSize.w, canvasSize.h);
   vpScaleRef.current = vp.scale;
 
   const toCanvas = (wx: number, wy: number) => ({
@@ -189,6 +187,8 @@ export function SpatialCanvas() {
       origX: screen.x,
       origY: screen.y,
       screen,
+      // Capture scale once so delta math is consistent even if canvas resizes.
+      startScale: vpScaleRef.current,
     });
     setDragPos({ x: screen.x, y: screen.y });
     setSnapPos(null);
@@ -198,9 +198,9 @@ export function SpatialCanvas() {
     if (!drag) return;
 
     const onMove = (e: MouseEvent) => {
-      const scale = vpScaleRef.current;
-      const rawX = Math.round(drag.origX + (e.clientX - drag.startMouseX) / scale);
-      const rawY = Math.round(drag.origY + (e.clientY - drag.startMouseY) / scale);
+      // Use the scale captured at mousedown — viewport is stable during drag.
+      const rawX = Math.round(drag.origX + (e.clientX - drag.startMouseX) / drag.startScale);
+      const rawY = Math.round(drag.origY + (e.clientY - drag.startMouseY) / drag.startScale);
       setDragPos({ x: rawX, y: rawY });
 
       const screens = useStore.getState().spatialScreens;

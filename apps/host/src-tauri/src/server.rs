@@ -230,11 +230,12 @@ async fn handle_connection(
         }
     }
 
-    emit(&app, DeviceEvent::Established { device_id: device_id.clone() });
-    emit_layout_update(&app, &state);
-
+    // Register in connections BEFORE emitting layout update so is_host resolves correctly.
     let (msg_tx, msg_rx) = mpsc::channel::<HostMsg>(512);
     state.connections.register(device_id.clone(), msg_tx);
+
+    emit(&app, DeviceEvent::Established { device_id: device_id.clone() });
+    emit_layout_update(&app, &state);
 
     let send = match conn.open_uni().await {
         Ok(s) => s,
