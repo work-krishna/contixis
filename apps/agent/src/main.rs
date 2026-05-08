@@ -274,14 +274,19 @@ mod daemon {
         // Channel used by event_loop and clipboard_poller to write to host.
         let (to_host_tx, to_host_rx) = mpsc::unbounded_channel::<AgentMsg>();
 
+        // Shared: last clipboard text received FROM the host.
+        // clipboard_poller skips sending if the local clipboard matches this,
+        // preventing the poller from echoing back what the host just pushed.
+        let host_clipboard: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new())); // parking_lot
+
         // Open agent→host uni stream; a single writer task owns it.
         let send = conn.open_uni().await?;
         tokio::spawn(host_writer(FrameWriter::new(send), to_host_rx));
-        tokio::spawn(clipboard_poller(to_host_tx.clone()));
+        tokio::spawn(clipboard_poller(to_host_tx.clone(), host_clipboard.clone()));
 
         // Accept host→agent uni stream for input/focus/clipboard events.
         let recv = conn.accept_uni().await?;
-        event_loop(FrameReader::new(recv), injector, sw, sh, to_host_tx).await;
+        event_loop(FrameReader::new(recv), injector, sw, sh, to_host_tx, host_clipboard).await;
 
         Ok(())
     }
@@ -332,6 +337,7 @@ mod daemon {
         screen_w: i32,
         screen_h: i32,
         to_host: mpsc::UnboundedSender<AgentMsg>,
+        host_clipboard: Arc<Mutex<String>>,
     ) {
         let mut focused = false;
         // Pixel cursor position on the agent screen, updated on every mouse delta.
@@ -450,6 +456,8 @@ mod daemon {
                     if let Ok(cd) = ProtoCbData::decode(frame.payload.as_slice()) {
                         if cd.content_type == "text/plain" {
                             if let Ok(text) = String::from_utf8(cd.data) {
+                                // Record what we received so the poller doesn't echo it back.
+                                *host_clipboard.lock() = text.clone();
                                 tokio::task::spawn_blocking(move || {
                                     if let Ok(mut cb) = arboard::Clipboard::new() {
                                         let _ = cb.set_text(text);
@@ -497,7 +505,10 @@ mod daemon {
     }
 
     /// Polls the local clipboard every 500 ms and queues changed text to host_writer.
-    async fn clipboard_poller(to_host: mpsc::UnboundedSender<AgentMsg>) {
+    async fn clipboard_poller(
+        to_host: mpsc::UnboundedSender<AgentMsg>,
+        host_clipboard: Arc<Mutex<String>>,
+    ) {
         let mut last = String::new();
         let mut seq: u64 = 0;
         loop {
@@ -512,6 +523,9 @@ mod daemon {
 
             let Some(text) = text else { continue };
             if text == last || text.is_empty() { continue; }
+
+            // Skip if this text was just pushed by the host to avoid echoing it back.
+            if text == *host_clipboard.lock() { continue; }
 
             last = text.clone();
             seq += 1;

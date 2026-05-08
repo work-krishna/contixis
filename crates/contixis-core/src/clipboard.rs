@@ -39,13 +39,15 @@ impl ClipboardManager {
     }
 
     /// A device reports it has new clipboard content of the given MIME type.
-    /// Returns the sequence number the host assigned, or None if this is an echo.
+    /// Returns the sequence number the host assigned, or None if content is identical.
     pub fn notify(&self, device_id: &str, mime_type: String, data: Vec<u8>) -> Option<u64> {
         let mut s = self.inner.lock();
 
-        // Echo suppression: if this device last saw our current seq, it's echoing.
+        // Suppress no-op updates — identical content regardless of source.
+        // Natural loop prevention: the host monitor ignores unchanged clipboard,
+        // and the agent poller tracks its own `last` sent value.
         if let Some(entry) = &s.current {
-            if s.device_seq.get(device_id) == Some(&entry.sequence) {
+            if entry.data == data && entry.mime_type == mime_type {
                 return None;
             }
         }
@@ -58,8 +60,6 @@ impl ClipboardManager {
             mime_type,
             data,
         });
-        // The source device already has this content.
-        s.device_seq.insert(device_id.to_string(), seq);
         Some(seq)
     }
 
