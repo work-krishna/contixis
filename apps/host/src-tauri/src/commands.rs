@@ -1,7 +1,8 @@
 use crate::conn_registry::HostMsg;
-use crate::server::{self, broadcast_grid_layout, collect_layout_screens, emit_layout_update};
+use crate::server::{self, broadcast_grid_layout, collect_layout_screens, emit, emit_layout_update, DeviceEvent};
 use crate::state::HostState;
 use contixis_core::ScreenPlacement;
+use contixis_input::platform;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
@@ -133,6 +134,7 @@ pub async fn update_grid_layout(
 #[tauri::command]
 pub async fn disconnect_device(
     device_id: String,
+    app: AppHandle,
     state: State<'_, Arc<HostState>>,
 ) -> Result<(), String> {
     state.connections.send_sync(&device_id, HostMsg::FocusDrop);
@@ -140,12 +142,19 @@ pub async fn disconnect_device(
     state.connections.unregister(&device_id);
     state.registry.remove(&device_id);
     state.grid.write().remove_screen(&device_id);
+    // Remove immediately from spatial layout so the canvas updates right away
+    // (the QUIC connection may take a moment to fully close; we don't want to wait).
+    state.layout.write().remove(&device_id);
     {
         let mut focused = state.focused_device.lock();
         if focused.as_deref() == Some(device_id.as_str()) {
             *focused = None;
+            platform::set_focus_active(false);
         }
     }
+    // Tell the frontend immediately — don't wait for the QUIC close event.
+    emit_layout_update(&app, &state);
+    emit(&app, DeviceEvent::Disconnected { device_id: device_id.clone() });
     tracing::info!(%device_id, "device disconnected by user");
     Ok(())
 }
@@ -178,5 +187,59 @@ pub async fn update_spatial_layout(
     }
     emit_layout_update(&app, &state);
     broadcast_grid_layout(&state);
+    Ok(())
+}
+
+/// Returns the current focus-release shortcut as (keysym, modifiers).
+#[tauri::command]
+pub async fn get_release_shortcut(
+    state: State<'_, Arc<HostState>>,
+) -> Result<(u32, u32), String> {
+    Ok(*state.release_shortcut.lock())
+}
+
+/// Updates the focus-release shortcut at runtime without restarting.
+#[tauri::command]
+pub async fn set_release_shortcut(
+    keysym: u32,
+    modifiers: u32,
+    state: State<'_, Arc<HostState>>,
+) -> Result<(), String> {
+    if keysym == 0 {
+        return Err("keysym must be non-zero".into());
+    }
+    *state.release_shortcut.lock() = (keysym, modifiers);
+    Ok(())
+}
+
+fn autostart_desktop_path() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("autostart").join("contixis.desktop"))
+}
+
+#[tauri::command]
+pub async fn get_autostart() -> bool {
+    autostart_desktop_path()
+        .map(|p| p.exists())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+pub async fn toggle_autostart(enable: bool) -> Result<(), String> {
+    let path = autostart_desktop_path().ok_or("cannot determine config directory")?;
+    if enable {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let exe = std::env::current_exe()
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .to_string();
+        let content = format!(
+            "[Desktop Entry]\nType=Application\nName=Contixis\nExec={exe}\nHidden=false\nNoDisplay=false\nX-GNOME-Autostart-enabled=true\n"
+        );
+        std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    } else {
+        let _ = std::fs::remove_file(&path);
+    }
     Ok(())
 }

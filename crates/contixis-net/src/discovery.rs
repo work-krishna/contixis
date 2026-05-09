@@ -3,7 +3,8 @@ use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 
-const SERVICE_TYPE: &str = "_contixis._tcp.local.";
+// const SERVICE_TYPE: &str = "_contixis._tcp.local.";
+const SERVICE_TYPE: &str = "contixis";
 
 #[derive(Debug, Clone)]
 pub struct DiscoveredHost {

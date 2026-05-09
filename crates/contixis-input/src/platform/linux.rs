@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 static HOOK_TX: OnceLock<mpsc::UnboundedSender<HookEvent>> = OnceLock::new();
 static HOOK_RUNNING: AtomicBool = AtomicBool::new(false);
 
+// Agent-side: track whether Shift is currently held (via injected events) so we can
+// temporarily adjust it when the host and agent have different keyboard layouts.
+static SHIFT_HELD: AtomicBool = AtomicBool::new(false);
+
 // Cached natural-scroll detection for this machine (host or agent).
 static NATURAL_SCROLL: OnceLock<bool> = OnceLock::new();
 
@@ -296,11 +300,18 @@ fn dispatch(ev: InputEvent, is_kbd: bool, modifiers: &mut u32) {
             let pressed = ev.value == 1;
             if is_kbd {
                 update_mods(ev.code, pressed, modifiers);
-                // Barrier approach: translate via X11 keysym so it's layout-aware.
-                // evdev code + 8 = X11 keycode.
+                // Translate evdev code → X11 keysym using the *effective* shift level.
+                // Using level 0 (unshifted) sends XK_3 for Shift+3; the agent then
+                // applies its own layout's Shift+3 mapping, which differs between
+                // US ('#') and UK ('£'). Sending the effective keysym (level 1 when
+                // Shift is held) transmits '#' directly — the agent injects the
+                // *character* rather than the *physical key*, so layout differences
+                // are handled on the agent side with modifier masking.
+                let shift_active = (*modifiers & contixis_proto::modifiers::SHIFT) != 0;
+                let keysym_idx: i32 = if shift_active { 1 } else { 0 };
                 let keysym = if let Some(XDpy(dpy)) = KEYSYM_DPY.get() {
                     let x11_code = (ev.code + 8) as u8;
-                    unsafe { x11::xlib::XKeycodeToKeysym(*dpy, x11_code, 0) as u32 }
+                    unsafe { x11::xlib::XKeycodeToKeysym(*dpy, x11_code, keysym_idx) as u32 }
                 } else {
                     0
                 };
@@ -583,28 +594,102 @@ pub fn inject_mouse_scroll(dx: i32, dy: i32) -> Result<()> {
     Ok(())
 }
 
+// evdev key codes for Shift keys (invariant across layouts).
+const KEY_LEFTSHIFT:  u16 = 42;
+const KEY_RIGHTSHIFT: u16 = 54;
+// X11 keysyms that represent Shift keys.
+const XK_SHIFT_L: u32 = 0xFFE1;
+const XK_SHIFT_R: u32 = 0xFFE2;
+// Keysyms below this value are printable characters; at or above are
+// control/modifier/function keys that don't need layout-based shift masking.
+const PRINTABLE_LIMIT: u32 = 0xFF00;
+
+/// Inject a synthetic Shift press or release.  Uses the same path as the
+/// surrounding key injection so events arrive at the compositor in strict order.
+/// Mixing uinput (kernel→X11) with XTest (direct-to-X11) causes the XTest
+/// Shift-restore to race ahead of the uinput character key, producing the wrong
+/// character — so the paths must be exclusive.
+fn inject_shift(dpy: *mut x11::xlib::Display, press: bool) {
+    if let Some(fd) = uinput_fd() {
+        // uinput path: all events are serialised through the kernel queue.
+        uinput_write(fd, EV_KEY, KEY_LEFTSHIFT, press as i32);
+        uinput_write(fd, EV_SYN, SYN_REPORT, 0);
+        return; // do NOT also send via XTest — ordering would break
+    }
+    // XTest fallback (only when uinput is unavailable).
+    let shift_xcode = unsafe {
+        x11::xlib::XKeysymToKeycode(dpy, XK_SHIFT_L as x11::xlib::KeySym)
+    };
+    if shift_xcode != 0 {
+        unsafe {
+            x11::xtest::XTestFakeKeyEvent(dpy, shift_xcode as u32, press as i32, x11::xlib::CurrentTime);
+            x11::xlib::XFlush(dpy);
+        }
+    }
+}
+
 pub fn inject_key_event(keysym: u32, pressed: bool, _modifiers: u32) -> Result<()> {
+    // Track Shift key state so we know when to mask it for character keys.
+    if keysym == XK_SHIFT_L || keysym == XK_SHIFT_R {
+        SHIFT_HELD.store(pressed, Ordering::Relaxed);
+    }
+
     let Some(XDpy(dpy)) = INJ_DPY.get() else { return Ok(()); };
-    // Resolve keysym → X11 keycode on the agent's display (layout-aware).
+
+    // Resolve keysym → X11 keycode in the agent's keyboard layout.
     let x11_code = unsafe {
         x11::xlib::XKeysymToKeycode(*dpy, keysym as x11::xlib::KeySym)
     };
     if x11_code == 0 { return Ok(()); }
 
+    // ── Modifier masking for cross-layout character injection ────────────────
+    // The host sends the *effective* keysym (e.g. '#' not '3' when Shift+3 was
+    // pressed on a US keyboard). Find which shift level produces this keysym at
+    // this keycode in the *agent's* layout, then temporarily release/press Shift
+    // so the correct character comes out regardless of layout differences.
+    let shift_was_held = SHIFT_HELD.load(Ordering::Relaxed);
+    let mut shift_adjusted = false;
+
+    if pressed && keysym < PRINTABLE_LIMIT {
+        // Scan shift levels 0–3 to find where this keysym lives on this keycode.
+        let level = unsafe {
+            (0i32..4).find(|&l| {
+                x11::xlib::XKeycodeToKeysym(*dpy, x11_code, l) as u32 == keysym
+            })
+        };
+        if let Some(level) = level {
+            let needs_shift = (level & 1) == 1i32;
+            if needs_shift && !shift_was_held {
+                // Character needs Shift but Shift isn't held → press it.
+                inject_shift(*dpy, true);
+                shift_adjusted = true;
+            } else if !needs_shift && shift_was_held {
+                // Character doesn't need Shift but Shift is held → release it.
+                inject_shift(*dpy, false);
+                shift_adjusted = true;
+            }
+        }
+    }
+
+    // ── Inject the key ───────────────────────────────────────────────────────
     if let Some(fd) = uinput_fd() {
-        // uinput uses evdev keycodes = X11 keycode − 8
         let evdev = (x11_code as u32).saturating_sub(8);
         if evdev > 0 {
             uinput_write(fd, EV_KEY, evdev as u16, pressed as i32);
             uinput_write(fd, EV_SYN, SYN_REPORT, 0);
-            return Ok(());
+        }
+    } else {
+        unsafe {
+            x11::xtest::XTestFakeKeyEvent(*dpy, x11_code as u32, pressed as i32, x11::xlib::CurrentTime);
+            x11::xlib::XFlush(*dpy);
         }
     }
-    // XTest fallback: use X11 keycode directly
-    unsafe {
-        x11::xtest::XTestFakeKeyEvent(*dpy, x11_code as u32, pressed as i32, x11::xlib::CurrentTime);
-        x11::xlib::XFlush(*dpy);
+
+    // ── Restore Shift if we temporarily changed it ───────────────────────────
+    if shift_adjusted {
+        inject_shift(*dpy, shift_was_held);
     }
+
     Ok(())
 }
 

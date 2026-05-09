@@ -1,14 +1,22 @@
-import { useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Titlebar } from "./components/Titlebar";
+import { TabBar } from "./components/TabBar";
 import { SpatialCanvas } from "./components/SpatialCanvas";
 import { DeviceList } from "./components/DeviceList";
+import { HelpTab } from "./components/HelpTab";
+import { AboutTab } from "./components/AboutTab";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { useStore } from "./store";
 import { onDeviceEvent, startServer, getSpatialLayout } from "./lib/tauri";
 
+type Tab = "view" | "help" | "about";
+
 export default function App() {
+  const [activeTab, setActiveTab] = useState<Tab>("view");
   const {
     setDevice, setDeviceStatus, setPairingPin,
-    setSpatialScreens, listenAddr,
+    setSpatialScreens,
+    listenAddr,
   } = useStore();
 
   useEffect(() => {
@@ -78,6 +86,11 @@ export default function App() {
           break;
         case "disconnected":
           setDeviceStatus(event.deviceId, "disconnected");
+          // Remove agent's screen from the canvas immediately.
+          // The layoutUpdate that follows confirms the Rust-side removal.
+          setSpatialScreens(
+            useStore.getState().spatialScreens.filter(s => s.deviceId !== event.deviceId)
+          );
           break;
         case "layoutUpdate":
           setSpatialScreens(event.screens);
@@ -96,10 +109,18 @@ export default function App() {
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <Titlebar />
+      <TabBar active={activeTab} onChange={setActiveTab} />
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        <SpatialCanvas />
-        <DeviceList />
+        {activeTab === "view" && (
+          <>
+            <SpatialCanvas />
+            <DeviceList />
+          </>
+        )}
+        {activeTab === "help"  && <HelpTab />}
+        {activeTab === "about" && <AboutTab />}
       </div>
+      <SettingsPanel />
     </div>
   );
 }

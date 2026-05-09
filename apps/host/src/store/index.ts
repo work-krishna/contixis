@@ -51,6 +51,14 @@ export interface AppState {
   // Host info
   hostId: string;
   listenAddr: string;
+
+  // Theme
+  theme: "dark" | "light";
+  setTheme: (t: "dark" | "light") => void;
+
+  // Settings panel visibility
+  showSettings: boolean;
+  setShowSettings: (v: boolean) => void;
 }
 
 export const useStore = create<AppState>((set) => ({
@@ -87,4 +95,13 @@ export const useStore = create<AppState>((set) => ({
 
   hostId: "local",
   listenAddr: "0.0.0.0:7443",
+
+  theme: "dark",
+  setTheme: (t) => {
+    document.documentElement.setAttribute("data-theme", t);
+    set({ theme: t });
+  },
+
+  showSettings: false,
+  setShowSettings: (v) => set({ showSettings: v }),
 }));

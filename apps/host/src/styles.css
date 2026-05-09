@@ -20,6 +20,21 @@
   background: var(--bg);
 }
 
+[data-theme="light"] {
+  --bg:          #f0f2f7;
+  --surface:     #ffffff;
+  --border:      #d0d4e0;
+  --accent:      #2563eb;
+  --accent-dim:  #bfdbfe;
+  --text:        #1a1d27;
+  --text-dim:    #6b7280;
+  --success:     #16a34a;
+  --warning:     #d97706;
+  --danger:      #dc2626;
+  --cell-empty:  #e5e7ef;
+  --cell-filled: #dbeafe;
+}
+
 body { height: 100vh; overflow: hidden; }
 #root { height: 100%; display: flex; flex-direction: column; }
 

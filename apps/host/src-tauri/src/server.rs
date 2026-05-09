@@ -48,7 +48,7 @@ pub struct ScreenUiPayload {
     pub display_name: String,
 }
 
-fn emit(app: &AppHandle, event: DeviceEvent) {
+pub fn emit(app: &AppHandle, event: DeviceEvent) {
     if let Err(e) = app.emit("device-event", &event) {
         tracing::warn!(error = %e, "emit failed");
     }

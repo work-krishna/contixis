@@ -33,10 +33,11 @@ pub fn run() {
             match InputHook::install() {
                 Ok((hook, mut hook_rx)) => {
                     host_state._hook = Some(hook);
-                    let conns  = host_state.connections.clone();
-                    let focus  = host_state.focused_device.clone();
-                    let cursor = host_state.virtual_cursor.clone();
-                    let dims   = host_state.screen_dims.clone();
+                    let conns    = host_state.connections.clone();
+                    let focus    = host_state.focused_device.clone();
+                    let cursor   = host_state.virtual_cursor.clone();
+                    let dims     = host_state.screen_dims.clone();
+                    let rel_sc   = host_state.release_shortcut.clone();
 
                     tauri::async_runtime::spawn(async move {
                         while let Some(event) = hook_rx.recv().await {
@@ -72,9 +73,10 @@ pub fn run() {
                                 }
                                 HookEvent::KeyEvent { keysym, pressed, modifiers } => {
                                     tracing::info!(ks = %format!("0x{:04X}", keysym), pressed, device = %did, "hook key");
-                                    // XK_Escape = 0xFF1B → return focus to host.
-                                    if keysym == 0xFF1B && pressed {
-                                        tracing::info!(device = %did, "ESC → releasing focus");
+                                    // Configurable release shortcut (default Ctrl+Alt+H).
+                                    let (rel_ks, rel_mods) = *rel_sc.lock();
+                                    if pressed && keysym == rel_ks && (modifiers & rel_mods) == rel_mods {
+                                        tracing::info!(device = %did, "release shortcut → returning focus to host");
                                         contixis_input::platform::set_focus_active(false);
                                         conns.send_sync(&did, HostMsg::FocusDrop);
                                         *focus.lock() = None;
@@ -158,6 +160,10 @@ pub fn run() {
             commands::update_grid_layout,
             commands::update_spatial_layout,
             commands::disconnect_device,
+            commands::get_autostart,
+            commands::toggle_autostart,
+            commands::get_release_shortcut,
+            commands::set_release_shortcut,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

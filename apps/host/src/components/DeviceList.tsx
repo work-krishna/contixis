@@ -3,8 +3,9 @@ import { useStore, type Device } from "../store";
 import { disconnectDevice } from "../lib/tauri";
 
 export function DeviceList() {
-  const { devices, pairingPin, pairingDeviceId, setPairingPin } = useStore();
+  const { devices, pairingPin, pairingDeviceId, setPairingPin, removeDevice } = useStore();
   const deviceArr = Object.values(devices);
+  const connectedCount = deviceArr.filter(d => d.status === "established").length;
 
   return (
     <aside
@@ -24,7 +25,10 @@ export function DeviceList() {
           fontSize: 13,
         }}
       >
-        Devices ({deviceArr.length})
+        Devices
+        <span style={{ fontWeight: 400, color: "var(--text-dim)", fontSize: 12, marginLeft: 6 }}>
+          {connectedCount} connected
+        </span>
       </div>
 
       {/* Pairing PIN banner */}
@@ -83,7 +87,10 @@ export function DeviceList() {
             <DeviceRow
               key={d.deviceId}
               device={d}
-              onDisconnect={() => disconnectDevice(d.deviceId).catch(console.error)}
+              onDisconnect={() =>
+                disconnectDevice(d.deviceId).catch(console.error)
+              }
+              onRemove={() => removeDevice(d.deviceId)}
             />
           ))
         )}
@@ -95,56 +102,70 @@ export function DeviceList() {
 function DeviceRow({
   device,
   onDisconnect,
+  onRemove,
 }: {
   device: Device;
   onDisconnect: () => void;
+  onRemove: () => void;
 }) {
   const [hover, setHover] = React.useState(false);
   const screenCount = useStore(
     (s) => s.spatialScreens.filter((sc) => sc.deviceId === device.deviceId).length
   );
 
+  const isDisconnected = device.status === "disconnected";
+  const isEstablished  = device.status === "established";
+
   return (
     <div
-      draggable
-      onDragStart={(e) => e.dataTransfer.setData("deviceId", device.deviceId)}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
         padding: "10px 16px",
         borderBottom: "1px solid var(--border)",
-        cursor: "grab",
-        background: hover ? "#1e2030" : "transparent",
+        background: hover ? "color-mix(in srgb, var(--surface) 80%, var(--border))" : "transparent",
         transition: "background 0.1s",
+        opacity: isDisconnected ? 0.6 : 1,
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <span style={{ fontWeight: 500, fontSize: 13 }}>
+      {/* Name + status badge */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <span style={{ fontWeight: 500, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {device.displayName || device.deviceId.slice(0, 12)}
         </span>
         <span
           className={`badge ${
-            device.status === "established"
-              ? "online"
-              : device.status === "pairing"
-              ? "pairing"
-              : "offline"
+            isEstablished           ? "online"
+            : device.status === "pairing" ? "pairing"
+            : "offline"
           }`}
+          style={{ flexShrink: 0 }}
         >
           {device.status}
         </span>
       </div>
+
+      {/* Sub-info */}
       <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 2 }}>
-        {device.osType} · {screenCount} screen
-        {screenCount !== 1 ? "s" : ""}
+        {device.osType ? `${device.osType} · ` : ""}
+        {screenCount} screen{screenCount !== 1 ? "s" : ""}
       </div>
-      {hover && (
+
+      {/* Action row */}
+      {isDisconnected ? (
+        <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            className="ghost"
+            style={{ fontSize: 11, padding: "3px 8px" }}
+            onClick={onRemove}
+          >
+            Remove
+          </button>
+          <span style={{ fontSize: 10, color: "var(--text-dim)", fontStyle: "italic" }}>
+            Reconnects automatically
+          </span>
+        </div>
+      ) : hover && isEstablished ? (
         <button
           className="danger"
           style={{ marginTop: 6, fontSize: 11, padding: "3px 8px" }}
@@ -152,7 +173,7 @@ function DeviceRow({
         >
           Disconnect
         </button>
-      )}
+      ) : null}
     </div>
   );
 }

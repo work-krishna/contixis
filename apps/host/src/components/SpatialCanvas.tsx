@@ -66,6 +66,7 @@ function applyReflow(others: SpatialScreen[], removed: SpatialScreen): SpatialSc
 }
 
 // Generate all valid attachment points around every existing screen.
+// All coordinates are rounded to integers to prevent float drift.
 function snapCandidates(
   screens: SpatialScreen[],
   dw: number,
@@ -80,34 +81,34 @@ function snapCandidates(
     // Right side – top, bottom, center Y alignments
     out.push({ x: rx, y: s.y });
     out.push({ x: rx, y: s.y + s.heightPx - dh });
-    out.push({ x: rx, y: s.y + (s.heightPx - dh) / 2 });
+    out.push({ x: rx, y: Math.round(s.y + (s.heightPx - dh) / 2) });
     // Left side
     out.push({ x: lx, y: s.y });
     out.push({ x: lx, y: s.y + s.heightPx - dh });
-    out.push({ x: lx, y: s.y + (s.heightPx - dh) / 2 });
+    out.push({ x: lx, y: Math.round(s.y + (s.heightPx - dh) / 2) });
     // Bottom – left, right, center X alignments
     out.push({ x: s.x, y: by });
     out.push({ x: s.x + s.widthPx - dw, y: by });
-    out.push({ x: s.x + (s.widthPx - dw) / 2, y: by });
+    out.push({ x: Math.round(s.x + (s.widthPx - dw) / 2), y: by });
     // Top
     out.push({ x: s.x, y: ty });
     out.push({ x: s.x + s.widthPx - dw, y: ty });
-    out.push({ x: s.x + (s.widthPx - dw) / 2, y: ty });
+    out.push({ x: Math.round(s.x + (s.widthPx - dw) / 2), y: ty });
   }
   return out;
 }
 
-// Filter candidates that would overlap with any existing screen.
+// Filter candidates that would strictly overlap (not merely touch) any existing screen.
+// tol=1: a candidate at exactly the edge passes; ≥2px of real overlap is rejected.
 function validSnapCandidates(
   candidates: Array<{ x: number; y: number }>,
   screens: SpatialScreen[],
   dw: number,
   dh: number,
-  tol = 2,
 ): Array<{ x: number; y: number }> {
   return candidates.filter(c => {
-    const x1 = c.x + tol, y1 = c.y + tol;
-    const x2 = c.x + dw - tol, y2 = c.y + dh - tol;
+    const x1 = c.x + 1, y1 = c.y + 1;
+    const x2 = c.x + dw - 1, y2 = c.y + dh - 1;
     return !screens.some(s => x1 < s.x + s.widthPx && x2 > s.x && y1 < s.y + s.heightPx && y2 > s.y);
   });
 }
@@ -130,6 +131,19 @@ function nearestSnap(
   return best;
 }
 
+// Compute the best snap position for the dragged screen at (rawX, rawY).
+function computeSnap(
+  screens: SpatialScreen[],
+  rawX: number,
+  rawY: number,
+  dw: number,
+  dh: number,
+): { x: number; y: number } | null {
+  const cands = snapCandidates(screens, dw, dh);
+  const valid = validSnapCandidates(cands, screens, dw, dh);
+  return nearestSnap(valid, rawX, rawY, dw, dh);
+}
+
 interface DragState {
   deviceId: string;
   startMouseX: number;
@@ -137,36 +151,37 @@ interface DragState {
   origX: number;
   origY: number;
   screen: SpatialScreen;
+  // Scale captured from the post-reflow viewport so delta math is consistent.
   startScale: number;
 }
 
 export function SpatialCanvas() {
   const { spatialScreens } = useStore();
   const containerRef = useRef<HTMLDivElement>(null);
+  const canvasSizeRef = useRef({ w: 0, h: 0 });
   const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
   const [drag, setDrag] = useState<DragState | null>(null);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   const [snapPos, setSnapPos] = useState<{ x: number; y: number } | null>(null);
 
-  const vpScaleRef = useRef(0.1);
-  const snapPosRef = useRef<{ x: number; y: number } | null>(null);
-  const dragPosRef = useRef<{ x: number; y: number } | null>(null);
-  snapPosRef.current = snapPos;
-  dragPosRef.current = dragPos;
-
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setCanvasSize({ w: el.clientWidth, h: el.clientHeight }));
+    const ro = new ResizeObserver(() => {
+      const size = { w: el.clientWidth, h: el.clientHeight };
+      canvasSizeRef.current = size;
+      setCanvasSize(size);
+    });
     ro.observe(el);
-    setCanvasSize({ w: el.clientWidth, h: el.clientHeight });
+    const size = { w: el.clientWidth, h: el.clientHeight };
+    canvasSizeRef.current = size;
+    setCanvasSize(size);
     return () => ro.disconnect();
   }, []);
 
-  // Viewport is computed from settled screens only (never from the floating dragged screen).
-  // This prevents the zoom-feedback loop: drag right → scale drops → delta grows → jumps further.
+  // Viewport computed from settled screens only (never from the floating dragged screen).
+  // This prevents the zoom-feedback loop: drag right → scale drops → delta grows → jumps.
   const vp = computeViewport(spatialScreens, canvasSize.w, canvasSize.h);
-  vpScaleRef.current = vp.scale;
 
   const toCanvas = (wx: number, wy: number) => ({
     cx: wx * vp.scale + vp.offsetX,
@@ -178,8 +193,14 @@ export function SpatialCanvas() {
     e.preventDefault();
     const state = useStore.getState();
     const others = state.spatialScreens.filter(s => s.deviceId !== screen.deviceId);
-    // Immediately reflow: shift right-adjacent screens to fill the gap.
-    state.setSpatialScreens(applyReflow(others, screen));
+    const reflowed = applyReflow(others, screen);
+    state.setSpatialScreens(reflowed);
+
+    // Compute scale from the post-reflow viewport so mouse→workspace mapping
+    // is correct from the very first mousemove.
+    const { w, h } = canvasSizeRef.current;
+    const postVP = computeViewport(reflowed, w, h);
+
     setDrag({
       deviceId: screen.deviceId,
       startMouseX: e.clientX,
@@ -187,8 +208,7 @@ export function SpatialCanvas() {
       origX: screen.x,
       origY: screen.y,
       screen,
-      // Capture scale once so delta math is consistent even if canvas resizes.
-      startScale: vpScaleRef.current,
+      startScale: postVP.scale,
     });
     setDragPos({ x: screen.x, y: screen.y });
     setSnapPos(null);
@@ -198,24 +218,24 @@ export function SpatialCanvas() {
     if (!drag) return;
 
     const onMove = (e: MouseEvent) => {
-      // Use the scale captured at mousedown — viewport is stable during drag.
       const rawX = Math.round(drag.origX + (e.clientX - drag.startMouseX) / drag.startScale);
       const rawY = Math.round(drag.origY + (e.clientY - drag.startMouseY) / drag.startScale);
       setDragPos({ x: rawX, y: rawY });
 
       const screens = useStore.getState().spatialScreens;
-      const cands = snapCandidates(screens, drag.screen.widthPx, drag.screen.heightPx);
-      const valid = validSnapCandidates(cands, screens, drag.screen.widthPx, drag.screen.heightPx);
-      setSnapPos(nearestSnap(valid, rawX, rawY, drag.screen.widthPx, drag.screen.heightPx));
+      setSnapPos(computeSnap(screens, rawX, rawY, drag.screen.widthPx, drag.screen.heightPx));
     };
 
-    const onUp = async () => {
-      const finalPos = snapPosRef.current ?? dragPosRef.current;
-      if (!finalPos) { setDrag(null); setDragPos(null); setSnapPos(null); return; }
+    const onUp = async (e: MouseEvent) => {
+      // Compute snap synchronously at drop time to avoid stale state from async renders.
+      const rawX = Math.round(drag.origX + (e.clientX - drag.startMouseX) / drag.startScale);
+      const rawY = Math.round(drag.origY + (e.clientY - drag.startMouseY) / drag.startScale);
+      const screens = useStore.getState().spatialScreens;
+      const snap = computeSnap(screens, rawX, rawY, drag.screen.widthPx, drag.screen.heightPx);
+      const finalPos = snap ?? { x: rawX, y: rawY };
 
       const placed = { ...drag.screen, x: finalPos.x, y: finalPos.y };
-      const current = useStore.getState().spatialScreens;
-      const all = [...current, placed];
+      const all = [...screens, placed];
       useStore.getState().setSpatialScreens(all);
 
       setDrag(null);
@@ -235,7 +255,7 @@ export function SpatialCanvas() {
     };
   }, [drag]);
 
-  // Build render list: store screens + dragged screen + ghost
+  // Build render list: settled screens + ghost + dragged screen
   const renderedElements: React.ReactNode[] = [];
 
   for (const screen of spatialScreens) {
@@ -277,7 +297,7 @@ export function SpatialCanvas() {
     );
   }
 
-  // Ghost: outline at snap target
+  // Ghost: dashed outline at the snap target position
   if (drag && snapPos) {
     const { cx, cy } = toCanvas(snapPos.x, snapPos.y);
     const cw = drag.screen.widthPx * vp.scale;

@@ -48,6 +48,9 @@ pub struct HostState {
     pub clipboard_seq:  Arc<AtomicU64>,
     /// Keeps the input hook alive for the app's lifetime.
     pub _hook:          Option<InputHook>,
+    /// Configurable focus-release hotkey (keysym, modifier_bits).
+    /// Default: Ctrl+Alt+H = (0x0068, CTRL|ALT = 0x06).
+    pub release_shortcut: Arc<Mutex<(u32, u32)>>,
 }
 
 impl HostState {
@@ -84,6 +87,8 @@ impl HostState {
             clipboard_seq: Arc::new(AtomicU64::new(1)),
             layout: Arc::new(parking_lot::RwLock::new(SpatialLayout::new())),
             _hook: None,
+            // Default: Ctrl+Alt+H (keysym=0x0068, modifiers=CTRL|ALT=0x06)
+            release_shortcut: Arc::new(Mutex::new((0x0068u32, 0x06u32))),
         }
     }
 }
