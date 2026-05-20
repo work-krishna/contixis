@@ -24,6 +24,11 @@ sudo apt-get install -y \
 ### Node.js (for host frontend)
 Node 18+ required. Install via [nvm](https://github.com/nvm-sh/nvm) or system package.
 
+> **Note:** On Ubuntu/Debian, `npm` may not be found even if Node.js is installed via `snap` or a minimal package. If you see `Command 'npm' not found`, install it explicitly:
+> ```bash
+> sudo apt install npm
+> ```
+
 ## Build
 
 ```bash
@@ -36,6 +41,18 @@ npm install
 npm run tauri dev     # dev mode
 npm run tauri build   # production bundle
 ```
+
+> **VS Code snap terminal — libpthread error:** If you launch the terminal from VS Code installed as a snap, its GTK environment variables (`GTK_PATH`, `GTK_IM_MODULE_FILE`, etc.) point into `/snap/core20`, causing a glibc `libpthread` version mismatch at runtime:
+> ```
+> symbol lookup error: /snap/core20/current/lib/x86_64-linux-gnu/libpthread.so.0:
+>     undefined symbol: __libc_pthread_init, version GLIBC_PRIVATE
+> ```
+> Fix: unset the snap GTK overrides before running, or open a regular (non-snap) terminal:
+> ```bash
+> unset GTK_PATH GTK_EXE_PREFIX GTK_IM_MODULE_FILE GDK_PIXBUF_MODULE_FILE \
+>       GDK_PIXBUF_MODULEDIR GSETTINGS_SCHEMA_DIR GIO_MODULE_DIR LOCPATH
+> npm run tauri dev
+> ```
 
 ## Project Layout
 

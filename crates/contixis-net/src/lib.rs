@@ -10,6 +10,6 @@ pub use transport::{
     make_agent_tls_config, make_agent_tls_config_insecure,
     make_agent_transport,
 };
-pub use discovery::MdnsDiscovery;
+pub use discovery::{DiscoveredHost, DiscoveryEvent, MdnsDiscovery};
 pub use host_session::{HandshakeEvent, HandshakeInfo, HostSession};
 pub use agent_session::AgentSession;

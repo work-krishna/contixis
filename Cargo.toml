@@ -9,6 +9,7 @@ members = [
     "crates/contixis-codec",
     "apps/agent",
     "apps/host/src-tauri",
+    "apps/agent-ui/src-tauri",
 ]
 
 [workspace.package]
