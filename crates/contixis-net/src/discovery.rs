@@ -1,6 +1,7 @@
 use anyhow::Result;
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
 use tokio::sync::mpsc;
 
 const SERVICE_TYPE: &str = "_contixis._tcp.local.";
@@ -32,6 +33,7 @@ impl MdnsDiscovery {
     pub fn advertise(&self, host_id: &str, port: u16) -> Result<()> {
         let instance = format!("contixis-{}", &host_id[..8.min(host_id.len())]);
         let host_fqdn = format!("{}.local.", local_hostname());
+        let my_ip = IpAddr::V4(local_ipv4().unwrap_or(Ipv4Addr::UNSPECIFIED));
 
         let mut props: HashMap<String, String> = HashMap::new();
         props.insert("host_id".to_string(), host_id.to_string());
@@ -40,12 +42,12 @@ impl MdnsDiscovery {
             SERVICE_TYPE,
             &instance,
             &host_fqdn,
-            "",
+            my_ip,
             port,
             props,
         )?;
         self.daemon.register(svc)?;
-        tracing::info!(%instance, port, "mDNS service registered");
+        tracing::info!(%instance, port, %my_ip, "mDNS service registered");
         Ok(())
     }
 
@@ -143,4 +145,15 @@ fn local_hostname() -> String {
         .ok()
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "localhost".into())
+}
+
+/// Determine the primary outbound IPv4 address by binding a UDP socket.
+/// No packets are actually sent.
+fn local_ipv4() -> Option<Ipv4Addr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V4(ip) => Some(ip),
+        _ => None,
+    }
 }

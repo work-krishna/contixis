@@ -27,11 +27,15 @@ impl AgentSession {
     }
 
     /// Open the control stream and drive handshake → pairing (if needed) → established.
-    pub async fn run_handshake(
+    pub async fn run_handshake<F, Fut>(
         &mut self,
         screens: Vec<contixis_proto::ScreenInfo>,
-        pin_provider: impl Fn() -> String,
-    ) -> Result<String> {
+        pin_provider: F,
+    ) -> Result<String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = String>,
+    {
         let (send, recv) = self.conn.open_bi().await?;
         let mut writer = FrameWriter::new(send);
         let mut reader = FrameReader::new(recv);
@@ -61,7 +65,7 @@ impl AgentSession {
                 let pr: contixis_proto::PairingRequired =
                     prost::Message::decode(frame.payload.as_slice())?;
 
-                let pin = pin_provider();
+                let pin = pin_provider().await;
                 tracing::info!(%device_id, "pairing required — user entered PIN");
 
                 let csr_pem = self.identity.lock().csr_pem()?;

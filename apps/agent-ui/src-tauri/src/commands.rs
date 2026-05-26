@@ -92,11 +92,18 @@ pub async fn disconnect(state: State<'_, Arc<AgentState>>) -> Result<(), String>
 
 #[tauri::command]
 pub async fn enter_pin(pin: String, state: State<'_, Arc<AgentState>>) -> Result<(), String> {
-    if let Some(tx) = state.pin_tx.lock().take() {
-        let _ = tx.send(pin);
-        Ok(())
-    } else {
-        Err("no pairing session in progress".into())
+    // Retry for up to 30s — the user may submit the PIN before the backend handshake
+    // reaches the pairing step, so we wait for pin_tx to be set.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Some(tx) = state.pin_tx.lock().take() {
+            let _ = tx.send(pin);
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("timed out — no pairing session reached in 30s".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 

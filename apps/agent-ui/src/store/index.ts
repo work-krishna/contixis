@@ -24,8 +24,6 @@ export interface AppState {
   pairedHosts: PairedHost[];
   discoveredHosts: DiscoveredHost[];
 
-  showPinDialog: boolean;
-
   setAgentInfo: (deviceId: string, status: ConnStatus, hostId: string | null, addr: string | null) => void;
   setPairedHosts: (hosts: PairedHost[]) => void;
   setDiscoveredHosts: (hosts: DiscoveredHost[]) => void;
@@ -34,7 +32,6 @@ export interface AppState {
   removeDiscovered: (hostId: string) => void;
 
   setConnStatus: (status: ConnStatus, hostId?: string | null, addr?: string | null) => void;
-  setShowPinDialog: (v: boolean) => void;
 
   markPairedOnline: (hostId: string, online: boolean) => void;
 }
@@ -46,7 +43,6 @@ export const useStore = create<AppState>((set) => ({
   connAddr:       null,
   pairedHosts:    [],
   discoveredHosts: [],
-  showPinDialog:  false,
 
   setAgentInfo: (deviceId, connStatus, connHostId, connAddr) =>
     set({ deviceId, connStatus, connHostId, connAddr }),
@@ -68,8 +64,6 @@ export const useStore = create<AppState>((set) => ({
 
   setConnStatus: (connStatus, connHostId = null, connAddr = null) =>
     set({ connStatus, connHostId, connAddr }),
-
-  setShowPinDialog: (showPinDialog) => set({ showPinDialog }),
 
   markPairedOnline: (hostId, online) =>
     set((s) => ({

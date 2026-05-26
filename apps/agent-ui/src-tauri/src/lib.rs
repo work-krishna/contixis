@@ -219,19 +219,17 @@ async fn do_connect(addr_str: String, app: AppHandle, state: Arc<AgentState>) ->
     let app_ref   = app.clone();
     let state_ref = state.clone();
     let addr_ref  = addr_str.clone();
-    let pin_provider = move || -> String {
+    let pin_provider = move || {
         let (tx, rx) = oneshot::channel::<String>();
         *state_ref.pin_tx.lock()     = Some(tx);
         *state_ref.conn_state.lock() = ConnState::PairingRequired { addr: addr_ref.clone() };
+        tracing::info!("pairing required — emitting event and waiting for PIN");
         emit_event(&app_ref, AgentEvent::StatusChange {
             status:  "pairing".into(),
             host_id: None,
             addr:    None,
         });
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async { rx.await.unwrap_or_default() })
-        })
+        async move { rx.await.unwrap_or_default() }
     };
 
     let device_id = session.run_handshake(screens, pin_provider).await?;

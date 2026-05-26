@@ -110,10 +110,16 @@ pub async fn start(
     // Advertise via mDNS.  The MdnsDiscovery value must be kept alive inside
     // the server task — dropping it shuts down the ServiceDaemon and immediately
     // unregisters the service, making the host invisible to agents.
-    let mdns = contixis_net::MdnsDiscovery::new().ok();
+    let mdns = match contixis_net::MdnsDiscovery::new() {
+        Ok(m) => Some(m),
+        Err(e) => {
+            tracing::warn!(error = %e, "mDNS init failed — host will not be discoverable");
+            None
+        }
+    };
     if let Some(ref m) = mdns {
         if let Err(e) = m.advertise(&host_id, addr.port()) {
-            tracing::warn!(error = %e, "mDNS advertise failed");
+            tracing::warn!(error = %e, "mDNS advertise failed — host will not be discoverable");
         }
     }
 

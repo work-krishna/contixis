@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useStore } from "./store";
 import { HostCard } from "./components/HostCard";
-import { PinDialog } from "./components/PinDialog";
 import {
   getAgentInfo,
   getPairedHosts,
@@ -13,12 +12,15 @@ export default function App() {
   const {
     deviceId, connStatus, connHostId,
     pairedHosts, discoveredHosts,
-    showPinDialog,
     setAgentInfo, setPairedHosts, setDiscoveredHosts,
     addDiscovered, removeDiscovered,
-    setConnStatus, setShowPinDialog,
+    setConnStatus,
     markPairedOnline,
   } = useStore();
+
+  const refreshPairedHosts = useCallback(() => {
+    getPairedHosts().then(setPairedHosts).catch(console.error);
+  }, [setPairedHosts]);
 
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
@@ -60,18 +62,25 @@ export default function App() {
           removeDiscovered(event.hostId);
           markPairedOnline(event.hostId, false);
           break;
-        case "statusChange":
-          if (event.status === "pairing") {
-            setShowPinDialog(true);
-          } else {
-            setShowPinDialog(false);
-          }
+        case "statusChange": {
+          // Capture the currently-connected host before the store update clears it.
+          const prevHostId = useStore.getState().connHostId;
           setConnStatus(
             event.status,
             event.hostId ?? null,
             event.addr   ?? null
           );
+          if (event.status === "connected") {
+            // First-time pairing just completed — add the new host to the paired list.
+            refreshPairedHosts();
+            if (event.hostId) markPairedOnline(event.hostId, true);
+          } else if (event.status === "idle") {
+            // Disconnected — mark the host as offline and refresh the paired list.
+            if (prevHostId) markPairedOnline(prevHostId, false);
+            refreshPairedHosts();
+          }
           break;
+        }
       }
     });
 
@@ -90,7 +99,6 @@ export default function App() {
     : connStatus === "pairing"    ? "Pairing…"
     : "Idle";
 
-  // Hosts shown in Discovered section: mDNS hits not already in Paired.
   const newlyDiscovered = discoveredHosts.filter(
     (d) => !pairedHosts.some((p) => p.hostId === d.hostId)
   );
@@ -134,7 +142,6 @@ export default function App() {
           </p>
         ) : (
           <>
-            {/* Discovered section */}
             <Section title="Discovered" count={newlyDiscovered.length} onRefresh={refreshDiscovered} refreshing={scanning}>
               {newlyDiscovered.length === 0 ? (
                 <Empty>Scanning for hosts on the local network…</Empty>
@@ -148,12 +155,12 @@ export default function App() {
                     addr={h.addr}
                     isOnline
                     isPaired={h.isPaired}
+                    onForgot={refreshPairedHosts}
                   />
                 ))
               )}
             </Section>
 
-            {/* Paired section */}
             <Section title="Paired Hosts" count={pairedHosts.length}>
               {pairedHosts.length === 0 ? (
                 <Empty>No paired hosts yet — connect to a host to pair.</Empty>
@@ -174,6 +181,7 @@ export default function App() {
                       isOnline={h.isOnline}
                       isPaired
                       canForget
+                      onForgot={refreshPairedHosts}
                     />
                   );
                 })
@@ -182,11 +190,6 @@ export default function App() {
           </>
         )}
       </div>
-
-      {/* Pairing PIN dialog */}
-      {showPinDialog && (
-        <PinDialog onDismiss={() => setShowPinDialog(false)} />
-      )}
     </div>
   );
 }

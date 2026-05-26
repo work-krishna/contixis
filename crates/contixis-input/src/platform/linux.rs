@@ -55,9 +55,22 @@ pub fn set_focus_active(active: bool) {
     AGENT_FOCUSED.store(active, Ordering::SeqCst);
 }
 
-// Tracked cursor position used by inject_mouse_move_rel to avoid XQueryPointer.
+// Tracked cursor position.
+// On the HOST side: updated by the evdev hook to track the real cursor for edge detection.
+// On the AGENT side: updated by inject_mouse_move_abs so inject_mouse_move_rel stays accurate.
 static CURSOR_X: AtomicI32 = AtomicI32::new(960);
 static CURSOR_Y: AtomicI32 = AtomicI32::new(540);
+
+/// Returns the evdev-tracked cursor position on the host (updated by the capture hook).
+pub fn get_hook_cursor() -> (i32, i32) {
+    (CURSOR_X.load(Ordering::Relaxed), CURSOR_Y.load(Ordering::Relaxed))
+}
+
+/// Sets the tracked cursor position (used to initialise from XQueryPointer or after a warp).
+pub fn set_hook_cursor(x: i32, y: i32) {
+    CURSOR_X.store(x, Ordering::Relaxed);
+    CURSOR_Y.store(y, Ordering::Relaxed);
+}
 
 // ── Hook (evdev capture) ─────────────────────────────────────────────────────
 
@@ -334,8 +347,21 @@ fn dispatch(ev: InputEvent, is_kbd: bool, modifiers: &mut u32) {
             }
         }
         EV_REL if !is_kbd => match ev.code {
-            REL_X      => { let _ = tx.send(HookEvent::MouseMove { dx: ev.value, dy: 0 }); }
-            REL_Y      => { let _ = tx.send(HookEvent::MouseMove { dx: 0, dy: ev.value }); }
+            REL_X => {
+                // Track host cursor position for edge detection (Wayland-safe, no XQueryPointer needed).
+                // Only accumulate while the host has control; once EVIOCGRAB is active the
+                // compositor stops moving its own cursor anyway.
+                if !AGENT_FOCUSED.load(Ordering::Relaxed) {
+                    CURSOR_X.fetch_add(ev.value, Ordering::Relaxed);
+                }
+                let _ = tx.send(HookEvent::MouseMove { dx: ev.value, dy: 0 });
+            }
+            REL_Y => {
+                if !AGENT_FOCUSED.load(Ordering::Relaxed) {
+                    CURSOR_Y.fetch_add(ev.value, Ordering::Relaxed);
+                }
+                let _ = tx.send(HookEvent::MouseMove { dx: 0, dy: ev.value });
+            }
             REL_WHEEL  => {
                 // Normalise to traditional direction on the wire (+1 = up).
                 // The host evdev event is raw (before libinput natural-scroll).
